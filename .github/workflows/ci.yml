@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -race -timeout 300s ./...
+      - name: Real execution — examples, capabilities, trace, replay, check, fmt, repl
+        shell: bash
+        run: |
+          go build -o tarn ./cmd/tarn
+          mkdir -p examples/out
+          test "$(./tarn run examples/hello.tarn | head -1)" = "hello, Tarn"
+          ./tarn run examples/agents.tarn | grep -qx "total 5"
+          set +e; ./tarn run examples/pipeline.tarn > /dev/null 2> err.txt; code=$?; set -e
+          test "$code" = "1" && grep -q 'capability "time" is required' err.txt
+          ./tarn run examples/pipeline.tarn --allow fs,time,rand --seed 7 --trace run.json > a.txt
+          ./tarn run examples/pipeline.tarn --replay run.json > b.txt
+          diff a.txt b.txt
+          grep -q '"tool": "fs.read"' run.json
+          for f in examples/*.tarn examples/lib/*.tarn; do ./tarn check "$f"; ./tarn fmt "$f" > /dev/null; done
+          printf 'fn double(x: Int) -> Int { return x * 2 }\ndouble(21)\n' | ./tarn repl | grep -q 42
+
+  lint:
+    name: fmt, vet, deps, secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - name: stdlib only, no unsafe
+        run: |
+          ! grep -q "^require" go.mod
+          ! grep -rn '"unsafe"' --include=*.go .
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

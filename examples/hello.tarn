@@ -1,0 +1,24 @@
+// expect: hello, Tarn
+// expect: 55
+// expect: {"evens": [0, 2, 4], "odds": [1, 3]}
+
+fn fib(n: Int) -> Int {
+    if n < 2 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn main() {
+    print("hello, Tarn")
+    print(fib(10))
+    let groups = {"evens": [], "odds": []}
+    for i in range(5) {
+        if i % 2 == 0 {
+            push(groups["evens"], i)
+        } else {
+            push(groups["odds"], i)
+        }
+    }
+    print(groups)
+}

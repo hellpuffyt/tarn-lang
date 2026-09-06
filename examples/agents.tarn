@@ -1,0 +1,34 @@
+// Three "agents" work a shared queue of jobs. Tasks are cooperative and
+// run in spawn order, so this program prints exactly the same thing on
+// every machine, every time — no locks, no races, no flaky output.
+// expect: agent 0 took job-0
+// expect: agent 0 took job-3
+// expect: agent 1 took job-1
+// expect: agent 1 took job-4
+// expect: agent 2 took job-2
+// expect: results [["JOB-0", "JOB-3"], ["JOB-1", "JOB-4"], ["JOB-2"]]
+// expect: total 5
+
+import "lib/text.tarn" as text
+
+fn agent(id: Int, jobs: List[Str]) -> List[Str] {
+    let done: List[Str] = []
+    for j in jobs {
+        print("agent " + str(id) + " took " + j)
+        push(done, text.shout(j))
+    }
+    return done
+}
+
+fn main() {
+    let jobs = map(range(5), fn(i: Int) -> Str { return "job-" + str(i) })
+    let tasks: List[Task[List[Str]]] = []
+    for a in range(3) {
+        let mine = filter(jobs, fn(j: Str) -> Bool { return int(slice(j, 4, len(j))) % 3 == a })
+        push(tasks, spawn agent(a, mine))
+    }
+    let results = await tasks
+    print("results", results)
+    let total = reduce(results, 0, fn(acc: Int, r: List[Str]) -> Int { return acc + len(r) })
+    print("total", total)
+}

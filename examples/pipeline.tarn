@@ -1,0 +1,36 @@
+// A workflow that touches the outside world through typed tools. Every
+// tool call needs a capability at run time and is recorded in the trace:
+//
+//   tarn run examples/pipeline.tarn --allow fs,time,rand --trace run.json
+//   tarn run examples/pipeline.tarn --replay run.json     # no capabilities needed
+//
+// The replay reproduces the run bit for bit without touching the disk,
+// the clock, or the RNG — and refuses if the program diverges from the
+// recorded calls.
+
+tool fs.read(path: Str) -> Str
+tool fs.write(path: Str, content: Str)
+tool time.now() -> Int
+tool rand.int(bound: Int) -> Int
+
+import "lib/text.tarn"
+
+fn summarize(path: Str) -> Map[Int] {
+    let body = fs.read(path)
+    return {"words": text.count_words(body), "chars": len(body)}
+}
+
+fn main() {
+    let started = time.now()
+    let files = ["examples/lib/text.tarn", "examples/hello.tarn"]
+    let reports = await map(files, fn(f: Str) -> Task[Map[Int]] { return spawn summarize(f) })
+    let total = 0
+    for r in reports {
+        total = total + r["words"]
+    }
+    let pick = files[rand.int(len(files))]
+    let out = "summary: " + str(total) + " words across " + str(len(files)) + " files; sample " + pick
+    fs.write("examples/out/summary.txt", out)
+    print(out)
+    print("elapsed ms >= 0:", time.now() - started >= 0)
+}

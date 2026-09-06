@@ -1,0 +1,14 @@
+// A small module. Every top-level fn is exported; `import "lib/text.tarn"`
+// binds it as `text` (or `as` whatever you like).
+
+fn shout(s: Str) -> Str {
+    return upper(s)
+}
+
+fn words(s: Str) -> List[Str] {
+    return filter(split(trim(s), " "), fn(w: Str) -> Bool { return w != "" })
+}
+
+fn count_words(s: Str) -> Int {
+    return len(words(s))
+}
