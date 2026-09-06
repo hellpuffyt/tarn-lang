@@ -120,6 +120,9 @@ Go 1.24+.
   same completion order.
 - No floats, no structs, no pattern matching, no exceptions beyond
   `error(msg)` unwinding to the caller of `await`/`main`.
+- `tarn fmt` drops comments (it prints from the AST). Comment-preserving
+  formatting is on the roadmap; until then use it on comment-free files or
+  review the diff.
 
 ## Documentation
 

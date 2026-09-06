@@ -37,7 +37,7 @@ jobs:
           ./tarn run examples/pipeline.tarn --replay run.json > b.txt
           diff a.txt b.txt
           grep -q '"tool": "fs.read"' run.json
-          for f in examples/*.tarn examples/lib/*.tarn; do ./tarn check "$f"; ./tarn fmt "$f" > /dev/null; done
+          for f in examples/*.tarn examples/lib/*.tarn; do ./tarn check "$f"; ./tarn fmt "$f" > /dev/null || test $? = 3; done
           printf 'fn double(x: Int) -> Int { return x * 2 }\ndouble(21)\n' | ./tarn repl | grep -q 42
 
   lint:

@@ -9,6 +9,7 @@ Each item is one reviewable PR.
 - [ ] `try { } catch e { }` so workflows can recover from tool failures.
 - [ ] Trace matching by `(tool, args)` so `par_map` runs replay regardless
   of completion order.
+- [ ] Comment-preserving `tarn fmt` (attach comments to AST nodes).
 - [ ] `tarn trace show run.json` — a readable timeline of a recording.
 
 ## 0.3 — language
