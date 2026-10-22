@@ -54,9 +54,12 @@ recursively drives the queue). At program end, `drain` runs whatever was
 never awaited. There are no goroutines in this path, so output order is a
 pure function of the program.
 
-`par_map(list, fn)` is the explicit escape hatch: real goroutines, results
-gathered in input order, `print` serialised by a mutex. Its trace entries
-are ordered by completion.
+`par_map(list, fn)` is the explicit escape hatch: one goroutine per
+element, results gathered in input order. Workers evaluate Tarn code under
+an interpreter lock that is released only around host tool calls, so I/O
+overlaps but closures, lists and maps are never mutated concurrently.
+Workers share the root interpreter's step budget and drain the tasks they
+spawn. Trace entries and prints are ordered by completion.
 
 ## Tool host
 
