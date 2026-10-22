@@ -450,3 +450,28 @@ fn main() { print(par_map([1, 2, 3, 4], slow.wait)) }`, func(in *Interp) {
 		t.Fatalf("peak concurrent tool calls = %d (want %d), out %q", peak, n, out)
 	}
 }
+
+// Regression: deeply nested input exhausted the Go stack ("fatal error:
+// stack overflow"), which no recover can catch. The parser now bounds
+// nesting and reports a positioned error.
+func TestParserBoundsNesting(t *testing.T) {
+	n := 200_000
+	cases := map[string]string{
+		"parens":  "fn main() { print(" + strings.Repeat("(", n) + "1" + strings.Repeat(")", n) + ") }",
+		"unary":   "fn main() { print(" + strings.Repeat("-", n) + "1) }",
+		"chain":   "fn main() {\n print(" + strings.Repeat("1+", n) + "1)\n}",
+		"blocks":  "fn main() {\n" + strings.Repeat("{", n) + strings.Repeat("}", n) + "\n}",
+		"types":   "fn f(x: " + strings.Repeat("List[", n) + "Int" + strings.Repeat("]", n) + ") {}",
+		"else-if": "fn main() {\n if false { }" + strings.Repeat(" else if false { }", n) + "\n}",
+	}
+	for name, src := range cases {
+		_, err := Parse("t", src)
+		if err == nil || !strings.Contains(err.Error(), "nesting too deep (limit 1000)") {
+			t.Fatalf("%s: want nesting error, got %v", name, err)
+		}
+	}
+	// Ordinary depth still works.
+	if out := mustRun(t, "fn main() {\n print("+strings.Repeat("1+", 500)+"1, "+strings.Repeat("(", 300)+"2"+strings.Repeat(")", 300)+")\n}"); out != "501 2\n" {
+		t.Fatalf("got %q", out)
+	}
+}
