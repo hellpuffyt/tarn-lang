@@ -211,6 +211,30 @@ func toJSON(v any) any {
 	return v
 }
 
+// nonData returns the type name of the first value inside v that has no
+// JSON form (functions, tasks, modules), or "" if v is plain data.
+func nonData(v any) string {
+	switch x := v.(type) {
+	case nil, int64, string, bool:
+		return ""
+	case *List:
+		for _, it := range x.Items {
+			if b := nonData(it); b != "" {
+				return b
+			}
+		}
+		return ""
+	case *Map:
+		for _, k := range sortedKeys(x) {
+			if b := nonData(x.M[k]); b != "" {
+				return b
+			}
+		}
+		return ""
+	}
+	return typeName(v)
+}
+
 // fromJSON converts decoded JSON back into Tarn values.
 func fromJSON(v any) any {
 	switch x := v.(type) {
@@ -605,6 +629,9 @@ func init() {
 	def("json", func(in *Interp, p Pos, a []any) (any, error) {
 		if err := argc(p, "json", a, 1); err != nil {
 			return nil, err
+		}
+		if bad := nonData(a[0]); bad != "" {
+			return nil, errAt(p, "json cannot encode a %s value", bad)
 		}
 		b, err := json.Marshal(toJSON(a[0]))
 		if err != nil {

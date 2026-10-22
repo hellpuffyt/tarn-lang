@@ -475,3 +475,12 @@ func TestParserBoundsNesting(t *testing.T) {
 		t.Fatalf("got %q", out)
 	}
 }
+
+// Regression: json(f) on a function serialised the interpreter's AST.
+func TestJSONRejectsNonData(t *testing.T) {
+	mustFail(t, "fn main() { print(json(main)) }", "json cannot encode a Fn value")
+	mustFail(t, "fn main() { print(json({\"k\": [1, print]})) }", "json cannot encode a Fn value")
+	if out := mustRun(t, `fn main() { print(json({"a": [1, "x", true, nil]})) }`); out != `{"a":[1,"x",true,null]}`+"\n" {
+		t.Fatalf("got %q", out)
+	}
+}
