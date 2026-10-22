@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // ----- runtime values -----
@@ -99,6 +100,27 @@ type Interp struct {
 	MaxDepth int
 	MaxSteps int
 	steps    int
+	// root is the interpreter that owns the step budget; par_map workers
+	// point at it so they cannot escape MaxSteps.
+	root *Interp
+	// gil serialises Tarn evaluation across par_map workers. It is held
+	// while a worker evaluates and released only around host tool calls,
+	// so tool I/O overlaps but environments, lists and maps are never
+	// mutated concurrently.
+	gil *sync.Mutex
+}
+
+// tick charges one step against the root interpreter's budget.
+func (in *Interp) tick(p Pos) error {
+	r := in
+	if in.root != nil {
+		r = in.root
+	}
+	r.steps++
+	if r.MaxSteps > 0 && r.steps > r.MaxSteps {
+		return errAt(p, "step limit reached (%d)", r.MaxSteps)
+	}
+	return nil
 }
 
 func NewInterp() *Interp {
@@ -332,8 +354,26 @@ func (in *Interp) call(p Pos, fn any, args []any) (any, error) {
 		}
 		return nil, nil
 	case *Builtin:
+		// Builtins with a fixed signature are re-checked here: a value
+		// that arrived through Any (or a builtin passed as a function
+		// value) must not reach the Go implementation with the wrong type.
+		if sig := builtinSigs[f.Name]; sig != nil && sig.Params != nil {
+			if len(args) != len(sig.Params) {
+				return nil, errAt(p, "%s expects %d argument(s), got %d", f.Name, len(sig.Params), len(args))
+			}
+			for i, pt := range sig.Params {
+				if err := checkValue(pt, args[i]); err != nil {
+					return nil, errAt(p, "%s argument %d: %v", f.Name, i+1, err)
+				}
+			}
+		}
 		return f.Fn(in, p, args)
 	case *ToolRef:
+		if in.gil != nil {
+			// Let other par_map workers evaluate while this one waits on I/O.
+			in.gil.Unlock()
+			defer in.gil.Lock()
+		}
 		return in.Tools.Call(f.Decl, p, args)
 	}
 	return nil, errAt(p, "cannot call a value of type %s", typeName(fn))
@@ -424,9 +464,8 @@ func (in *Interp) block(env *Env, b *Block) (any, ctrl, error) {
 }
 
 func (in *Interp) stmt(env *Env, s Stmt) (any, ctrl, error) {
-	in.steps++
-	if in.MaxSteps > 0 && in.steps > in.MaxSteps {
-		return nil, ctrlNone, errAt(s.spos(), "step limit reached (%d)", in.MaxSteps)
+	if err := in.tick(s.spos()); err != nil {
+		return nil, ctrlNone, err
 	}
 	switch s := s.(type) {
 	case *LetStmt:
@@ -495,9 +534,8 @@ func (in *Interp) stmt(env *Env, s Stmt) (any, ctrl, error) {
 		}
 	case *WhileStmt:
 		for {
-			in.steps++
-			if in.MaxSteps > 0 && in.steps > in.MaxSteps {
-				return nil, ctrlNone, errAt(s.P, "step limit reached (%d)", in.MaxSteps)
+			if err := in.tick(s.P); err != nil {
+				return nil, ctrlNone, err
 			}
 			c, err := in.expr(env, s.Cond)
 			if err != nil {
@@ -540,9 +578,8 @@ func (in *Interp) stmt(env *Env, s Stmt) (any, ctrl, error) {
 			return nil, ctrlNone, errAt(s.Iter.pos(), "cannot iterate over %s", typeName(it))
 		}
 		for _, item := range items {
-			in.steps++
-			if in.MaxSteps > 0 && in.steps > in.MaxSteps {
-				return nil, ctrlNone, errAt(s.P, "step limit reached (%d)", in.MaxSteps)
+			if err := in.tick(s.P); err != nil {
+				return nil, ctrlNone, err
 			}
 			inner := newEnv(env)
 			inner.vars[s.Var] = item
