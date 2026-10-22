@@ -703,13 +703,15 @@ func init() {
 	})
 }
 
-// SaveTrace writes the recorded trace as JSON.
+// SaveTrace writes the recorded trace as JSON. Traces hold whatever data
+// flowed through tools (file contents, HTTP bodies, env values), so a new
+// file is created readable by the owner only.
 func (h *ToolHost) SaveTrace(path string) error {
 	b, err := json.MarshalIndent(h.Trace, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(b, '\n'), 0o644)
+	return os.WriteFile(path, append(b, '\n'), 0o600)
 }
 
 // LoadReplay reads a trace to replay from.

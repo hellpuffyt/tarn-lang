@@ -3,6 +3,7 @@ package tarn
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -482,5 +483,26 @@ func TestJSONRejectsNonData(t *testing.T) {
 	mustFail(t, "fn main() { print(json({\"k\": [1, print]})) }", "json cannot encode a Fn value")
 	if out := mustRun(t, `fn main() { print(json({"a": [1, "x", true, nil]})) }`); out != `{"a":[1,"x",true,null]}`+"\n" {
 		t.Fatalf("got %q", out)
+	}
+}
+
+// Traces carry tool data (file bodies, env values); a new trace file must
+// not be group/world readable.
+func TestSaveTraceIsOwnerOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not meaningful on Windows")
+	}
+	h := NewToolHost()
+	h.Trace = []TraceEntry{{Seq: 1, Tool: "env.get", Args: []any{"K"}, Result: "v"}}
+	path := filepath.Join(t.TempDir(), "run.json")
+	if err := h.SaveTrace(path); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("trace mode %v is readable by others", fi.Mode().Perm())
 	}
 }
