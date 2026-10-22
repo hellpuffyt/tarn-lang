@@ -103,6 +103,7 @@ go build -o tarn ./cmd/tarn
 go test -race ./...
 ./tarn run examples/hello.tarn
 ./tarn run examples/agents.tarn
+mkdir -p examples/out          # pipeline.tarn writes examples/out/summary.txt
 ./tarn run examples/pipeline.tarn --allow fs,time,rand --seed 7 --trace run.json
 ./tarn run examples/pipeline.tarn --replay run.json
 ./tarn check examples/agents.tarn && ./tarn fmt examples/agents.tarn

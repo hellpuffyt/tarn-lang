@@ -1,6 +1,7 @@
 // A workflow that touches the outside world through typed tools. Every
 // tool call needs a capability at run time and is recorded in the trace:
 //
+//   mkdir -p examples/out   (fs.write does not create directories)
 //   tarn run examples/pipeline.tarn --allow fs,time,rand --trace run.json
 //   tarn run examples/pipeline.tarn --replay run.json     # no capabilities needed
 //
