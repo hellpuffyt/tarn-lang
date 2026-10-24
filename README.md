@@ -23,7 +23,7 @@ fn main() {
 
 ```
 $ tarn run flow.tarn
-error: 6:23: capability "http" is required to call http.get (run with --allow http)
+error: flow.tarn:5:31: capability "http" is required to call http.get (run with --allow http)
 
 $ tarn run flow.tarn --allow http,fs --trace run.json
 3 items
@@ -32,7 +32,7 @@ $ tarn run flow.tarn --replay run.json          # offline, no capabilities: iden
 3 items
 ```
 
-Go, standard library only, ~2,600 lines. `tarn run | check | fmt | repl`.
+Go, standard library only, ~3,400 lines of non-test code. `tarn run | check | fmt | repl`.
 
 ## What is it?
 
@@ -41,7 +41,7 @@ Go, standard library only, ~2,600 lines. `tarn run | check | fmt | repl`.
 | **Language** | `Int`, `Str`, `Bool`, `Nil`, `List[T]`, `Map[T]`, `Fn(..) -> T`, `Task[T]`, first-class closures, `if`/`for`/`while`, modules via `import`, string/list/map builtins, higher-order `map`/`filter`/`reduce`. |
 | **Gradual static checker** | Annotated parameters, returns and `let` types are enforced at compile time (arity, operand types, every-path returns, break outside loop, unknown names, module members). Unannotated code is `Any` and re-checked at run time where it meets a typed boundary. |
 | **Tools** | `tool ns.name(params) -> T` binds a host function. Arguments and results are checked against the declaration; each namespace needs a capability (`--allow http,fs,env,time,rand,proc`) or the call fails with a message that tells you which. |
-| **Tasks** | `spawn f(x)` creates a task, `await t` / `await [t1, t2]` collects. Tasks are cooperative and run in spawn order, so output is identical on every machine. `par_map` gives real goroutine parallelism when you want it. |
+| **Tasks** | `spawn f(x)` creates a task, `await t` / `await [t1, t2]` collects. Tasks are cooperative and run in spawn order, so output is identical on every machine. `par_map` fans work out to goroutines: their tool calls (I/O) overlap, while the Tarn code itself runs one worker at a time under an interpreter lock, so shared variables cannot race. |
 | **Trace and replay** | `--trace out.json` records every tool call (sequence, tool, args, result). `--replay in.json` serves those results back and refuses to continue if the program diverges from the recording. Replays need no capabilities. |
 | **Determinism** | `time.now` and `rand.int` are tools too; `--seed` fixes the RNG; there is no other source of nondeterminism. Same program + same trace = same run. |
 | **Tooling** | `tarn check` (diagnostics with `file:line:col`), `tarn fmt` (idempotent canonical formatter, `-w` to write, exit 3 in CI if it would change), `tarn repl`. |
@@ -86,12 +86,14 @@ the runtime contract, not the syntax.
 
 ## Why is this not just a tutorial?
 
-Because the runtime contract is tested: 20 static-error cases, runtime
+Because the runtime contract is tested: 18 static-error cases, runtime
 errors with exact `line:col`, deterministic task output checked across 20
 runs, capability denial, trace recording, seeded reproducibility, replay
 equality, replay divergence detection, tool return-type enforcement, import
 cycles, formatter idempotence over every example, a step limit that stops
-`while true {}`, and an 8,000-program token-soup fuzz that must never panic —
+`while true {}`, and an 8,000-program token-soup fuzz that must never panic, a parser nesting
+limit against stack-exhaustion input, and `par_map` checked for data races,
+step-limit enforcement and real tool-call overlap —
 all under `go test -race`.
 
 ## Build, test, run
@@ -101,6 +103,7 @@ go build -o tarn ./cmd/tarn
 go test -race ./...
 ./tarn run examples/hello.tarn
 ./tarn run examples/agents.tarn
+mkdir -p examples/out          # pipeline.tarn writes examples/out/summary.txt
 ./tarn run examples/pipeline.tarn --allow fs,time,rand --seed 7 --trace run.json
 ./tarn run examples/pipeline.tarn --replay run.json
 ./tarn check examples/agents.tarn && ./tarn fmt examples/agents.tarn
@@ -115,9 +118,18 @@ Go 1.24+.
   seconds).
 - Gradual typing means `Any` flows through builtins like `parse_json`; the
   runtime checks catch mismatches at typed boundaries, not before.
-- Cooperative tasks do not run in parallel; `par_map` does, and its trace
-  order follows completion order, so replaying a `par_map` run needs the
-  same completion order.
+- Cooperative tasks do not run in parallel. `par_map` overlaps tool calls
+  only (Tarn code in its workers is serialised); its trace and print order
+  follow completion order, so replaying a `par_map` run needs the same
+  completion order.
+- Replay stops a program that makes *more* or *different* calls than the
+  trace, but does not fail a program that makes *fewer* calls.
+- `parse_json` of a non-integer number yields a value Tarn cannot do
+  arithmetic on (there are no floats).
+- Expressions, blocks, types and `else if` chains may nest at most 1000
+  levels deep.
+- `tarn run` sets no step limit; `MaxSteps` is only available when
+  embedding the interpreter as a Go package.
 - No floats, no structs, no pattern matching, no exceptions beyond
   `error(msg)` unwinding to the caller of `await`/`main`.
 - `tarn fmt` drops comments (it prints from the AST). Comment-preserving
@@ -128,6 +140,7 @@ Go 1.24+.
 
 - [`docs/LANGUAGE.md`](docs/LANGUAGE.md) — syntax, types, builtins, tools, tasks, tracing
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — checker, interpreter, scheduler, tool host, replay protocol
+- [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) — audit evidence, acceptance checklist
 - [`SECURITY.md`](SECURITY.md), [`TESTING.md`](TESTING.md), [`ROADMAP.md`](ROADMAP.md), [`CONTRIBUTING.md`](CONTRIBUTING.md), [`CHANGELOG.md`](CHANGELOG.md)
 
 ## Why star or contribute?

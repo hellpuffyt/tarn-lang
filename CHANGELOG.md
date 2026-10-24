@@ -5,6 +5,24 @@ Language and trace-format changes are called out explicitly.
 
 ## [Unreleased]
 
+### Fixed
+- `par_map` no longer crashes with "concurrent map writes" when workers
+  touch shared variables: worker code runs under an interpreter lock that is
+  released around tool calls, so tool I/O now genuinely overlaps (the tool
+  host previously held its lock during every host call).
+- `par_map` workers share the program's step budget and drain tasks they
+  spawn instead of silently dropping them.
+- Typed builtins (`upper`, `min`, `split`, …) re-check arguments at run
+  time; a value arriving through `Any` used to panic the interpreter.
+- The parser caps nesting at 1000 levels; deeply nested input used to kill
+  the process with an unrecoverable stack overflow.
+- `json()` rejects functions, tasks and modules instead of dumping the AST.
+- CI: actions pinned to commit SHAs; a `grep -q` SIGPIPE flake under
+  `pipefail` removed.
+
+### Security
+- Trace files are written with mode 0600.
+
 ## [0.1.0] — 2026-09-06
 
 First release. Trace format: JSON array of `{seq, tool, args, result|error}`.

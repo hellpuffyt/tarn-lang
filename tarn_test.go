@@ -3,8 +3,11 @@ package tarn
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func run(t *testing.T, src string, setup func(*Interp)) (string, error) {
@@ -361,5 +364,145 @@ func TestFuzzNeverPanics(t *testing.T) {
 			in.MaxDepth = 50
 			_ = in.RunSource("fuzz", b.String())
 		}()
+	}
+}
+
+// Regression: a value that reaches a typed builtin through Any (or a
+// builtin passed as a function value) used to panic the Go runtime.
+func TestBuiltinsRecheckAnyArgumentsAtRuntime(t *testing.T) {
+	mustFail(t, "fn main() {\n let x = parse_json(\"1\")\n print(upper(x))\n}", "upper argument 1: expected Str, got Int")
+	mustFail(t, "fn main() { print(map([1], upper)) }", "upper argument 1: expected Str, got Int")
+	mustFail(t, "fn main() {\n let x = parse_json(\"[1]\")\n print(min(x[0], x))\n}", "min argument 2: expected Int, got List")
+	if out := mustRun(t, "fn main() { print(map([\"a\"], upper)) }"); out != "[\"A\"]\n" {
+		t.Fatalf("got %q", out)
+	}
+}
+
+// Regression: par_map workers mutated shared environments concurrently
+// ("fatal error: concurrent map writes"), escaped MaxSteps, dropped tasks
+// they spawned, and serialised all tool calls behind the trace lock.
+func TestParMapIsSafeBoundedAndOverlapsTools(t *testing.T) {
+	out := mustRun(t, `
+fn main() {
+    let c = 0
+    let seen = []
+    let r = par_map(range(500), fn(x: Int) -> Int {
+        c = c + 1
+        push(seen, x)
+        return x * 2
+    })
+    print(c, len(seen), r[0], r[499])
+}`)
+	if out != "500 500 0 998\n" {
+		t.Fatalf("got %q", out)
+	}
+
+	_, err := run(t, "fn main() {\n par_map(range(4), fn(x: Int) -> Int {\n while true { }\n return x\n })\n}",
+		func(in *Interp) { in.MaxSteps = 1000 })
+	if err == nil || !strings.Contains(err.Error(), "step limit reached (1000)") {
+		t.Fatalf("par_map escaped the step limit: %v", err)
+	}
+
+	out = mustRun(t, `
+fn say(x: Int) { print("task", x) }
+fn main() {
+    par_map([1], fn(x: Int) -> Int { spawn say(x)
+        return x })
+    print("done")
+}`)
+	if out != "task 1\ndone\n" {
+		t.Fatalf("spawned task in par_map worker was lost: %q", out)
+	}
+
+	// Four tool calls must be in flight at the same time. Each waits until
+	// it sees all four (or gives up after 5s), so a serialised host fails.
+	const n = 4
+	var mu sync.Mutex
+	inflight, peak := 0, 0
+	release := make(chan struct{})
+	out, err = run(t, `
+tool slow.wait(x: Int) -> Int
+fn main() { print(par_map([1, 2, 3, 4], slow.wait)) }`, func(in *Interp) {
+		in.Tools.Allowed["slow"] = true
+		in.Tools.Register("slow.wait", "slow", func(a []any) (any, error) {
+			mu.Lock()
+			inflight++
+			if inflight > peak {
+				peak = inflight
+			}
+			if peak == n {
+				close(release)
+			}
+			mu.Unlock()
+			select {
+			case <-release:
+			case <-time.After(5 * time.Second):
+			}
+			mu.Lock()
+			inflight--
+			mu.Unlock()
+			return a[0], nil
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if peak != n || out != "[1, 2, 3, 4]\n" {
+		t.Fatalf("peak concurrent tool calls = %d (want %d), out %q", peak, n, out)
+	}
+}
+
+// Regression: deeply nested input exhausted the Go stack ("fatal error:
+// stack overflow"), which no recover can catch. The parser now bounds
+// nesting and reports a positioned error.
+func TestParserBoundsNesting(t *testing.T) {
+	n := 200_000
+	cases := map[string]string{
+		"parens":  "fn main() { print(" + strings.Repeat("(", n) + "1" + strings.Repeat(")", n) + ") }",
+		"unary":   "fn main() { print(" + strings.Repeat("-", n) + "1) }",
+		"chain":   "fn main() {\n print(" + strings.Repeat("1+", n) + "1)\n}",
+		"blocks":  "fn main() {\n" + strings.Repeat("{", n) + strings.Repeat("}", n) + "\n}",
+		"types":   "fn f(x: " + strings.Repeat("List[", n) + "Int" + strings.Repeat("]", n) + ") {}",
+		"else-if": "fn main() {\n if false { }" + strings.Repeat(" else if false { }", n) + "\n}",
+	}
+	for name, src := range cases {
+		_, err := Parse("t", src)
+		if err == nil || !strings.Contains(err.Error(), "nesting too deep (limit 1000)") {
+			t.Fatalf("%s: want nesting error, got %v", name, err)
+		}
+	}
+	// Ordinary depth still works.
+	if out := mustRun(t, "fn main() {\n print("+strings.Repeat("1+", 500)+"1, "+strings.Repeat("(", 300)+"2"+strings.Repeat(")", 300)+")\n}"); out != "501 2\n" {
+		t.Fatalf("got %q", out)
+	}
+}
+
+// Regression: json(f) on a function serialised the interpreter's AST.
+func TestJSONRejectsNonData(t *testing.T) {
+	mustFail(t, "fn main() { print(json(main)) }", "json cannot encode a Fn value")
+	mustFail(t, "fn main() { print(json({\"k\": [1, print]})) }", "json cannot encode a Fn value")
+	if out := mustRun(t, `fn main() { print(json({"a": [1, "x", true, nil]})) }`); out != `{"a":[1,"x",true,null]}`+"\n" {
+		t.Fatalf("got %q", out)
+	}
+}
+
+// Traces carry tool data (file bodies, env values); a new trace file must
+// not be group/world readable.
+func TestSaveTraceIsOwnerOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not meaningful on Windows")
+	}
+	h := NewToolHost()
+	h.Trace = []TraceEntry{{Seq: 1, Tool: "env.get", Args: []any{"K"}, Result: "v"}}
+	path := filepath.Join(t.TempDir(), "run.json")
+	if err := h.SaveTrace(path); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("trace mode %v is readable by others", fi.Mode().Perm())
 	}
 }

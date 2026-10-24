@@ -42,7 +42,8 @@ type ToolHost struct {
 	Seed    int64
 	rng     uint64
 	Clock   func() time.Time
-	mu      sync.Mutex
+	mu      sync.Mutex // guards Trace, Replay cursor
+	rngMu   sync.Mutex // guards rng (rand.int may run concurrently under par_map)
 }
 
 func NewToolHost() *ToolHost {
@@ -95,6 +96,8 @@ func (h *ToolHost) Register(name, capability string, impl ToolImpl) {
 }
 
 func (h *ToolHost) next() uint64 {
+	h.rngMu.Lock()
+	defer h.rngMu.Unlock()
 	if h.rng == 0 {
 		h.rng = uint64(h.Seed)*0x9E3779B97F4A7C15 + 0x2545F4914F6CDD1D
 	}
@@ -136,18 +139,18 @@ func (h *ToolHost) Call(d *ToolDecl, p Pos, args []any) (any, error) {
 			return nil, errAt(p, "%s argument %q: %v", name, pr.Name, err)
 		}
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	seq := len(h.Trace) + 1
 	var result any
 	var err error
+	h.mu.Lock()
 	if h.Replay != nil {
 		if h.replayI >= len(h.Replay) {
+			h.mu.Unlock()
 			return nil, errAt(p, "replay: trace ended but program called %s", name)
 		}
 		rec := h.Replay[h.replayI]
 		h.replayI++
 		if rec.Tool != name || !Equal(fromJSON(rec.Args), toList(args)) {
+			h.mu.Unlock()
 			return nil, errAt(p, "replay: expected call #%d %s(%s), program called %s(%s)", rec.Seq, rec.Tool, Show(fromJSON(rec.Args)), name, Show(toList(args)))
 		}
 		if rec.Error != "" {
@@ -157,18 +160,25 @@ func (h *ToolHost) Call(d *ToolDecl, p Pos, args []any) (any, error) {
 		}
 	} else {
 		capability := h.caps[name]
-		if !h.Allowed[capability] {
+		allowed := h.Allowed[capability]
+		impl := h.impls[name]
+		h.mu.Unlock()
+		if !allowed {
 			return nil, errAt(p, "capability %q is required to call %s (run with --allow %s)", capability, name, capability)
 		}
-		result, err = h.impls[name](args)
+		// The host function runs without the lock so par_map fan-out
+		// really overlaps; the trace is ordered by completion.
+		result, err = impl(args)
+		h.mu.Lock()
 	}
-	entry := TraceEntry{Seq: seq, Tool: name, Args: toJSON(toList(args)).([]any)}
+	entry := TraceEntry{Seq: len(h.Trace) + 1, Tool: name, Args: toJSON(toList(args)).([]any)}
 	if err != nil {
 		entry.Error = err.Error()
 	} else {
 		entry.Result = toJSON(result)
 	}
 	h.Trace = append(h.Trace, entry)
+	h.mu.Unlock()
 	if err != nil {
 		return nil, errAt(p, "%s: %v", name, err)
 	}
@@ -199,6 +209,30 @@ func toJSON(v any) any {
 		return float64(x)
 	}
 	return v
+}
+
+// nonData returns the type name of the first value inside v that has no
+// JSON form (functions, tasks, modules), or "" if v is plain data.
+func nonData(v any) string {
+	switch x := v.(type) {
+	case nil, int64, string, bool:
+		return ""
+	case *List:
+		for _, it := range x.Items {
+			if b := nonData(it); b != "" {
+				return b
+			}
+		}
+		return ""
+	case *Map:
+		for _, k := range sortedKeys(x) {
+			if b := nonData(x.M[k]); b != "" {
+				return b
+			}
+		}
+		return ""
+	}
+	return typeName(v)
 }
 
 // fromJSON converts decoded JSON back into Tarn values.
@@ -596,6 +630,9 @@ func init() {
 		if err := argc(p, "json", a, 1); err != nil {
 			return nil, err
 		}
+		if bad := nonData(a[0]); bad != "" {
+			return nil, errAt(p, "json cannot encode a %s value", bad)
+		}
 		b, err := json.Marshal(toJSON(a[0]))
 		if err != nil {
 			return nil, errAt(p, "json: %v", err)
@@ -609,10 +646,12 @@ func init() {
 		}
 		return fromJSON(v), nil
 	})
-	// par_map runs fn over the list in real goroutines; results come back
-	// in input order. Tool calls inside are traced in completion order,
-	// so a par_map program is deterministic in output but its trace order
-	// may vary — replay of such traces requires the same completion order.
+	// par_map runs fn over the list in goroutines; results come back in
+	// input order. Tarn code in the workers is serialised by an
+	// interpreter lock (no data races on shared closures, lists or maps);
+	// the lock is released around host tool calls, so the I/O overlaps.
+	// Tool calls are traced in completion order and print order may vary,
+	// so replaying such a trace requires the same completion order.
 	def("par_map", func(in *Interp, p Pos, a []any) (any, error) {
 		if err := argc(p, "par_map", a, 2); err != nil {
 			return nil, err
@@ -623,17 +662,38 @@ func init() {
 		}
 		out := make([]any, len(l.Items))
 		errs := make([]error, len(l.Items))
+		gil := in.gil
+		if gil == nil {
+			gil = &sync.Mutex{}
+		}
+		root := in.root
+		if root == nil {
+			root = in
+		}
 		var wg sync.WaitGroup
-		var mu sync.Mutex
 		for i, it := range l.Items {
 			wg.Add(1)
 			go func(i int, it any) {
 				defer wg.Done()
-				sub := &Interp{Out: func(s string) { mu.Lock(); in.Out(s); mu.Unlock() }, Tools: in.Tools, modules: in.modules, types: in.types, MaxDepth: in.MaxDepth}
+				gil.Lock()
+				defer gil.Unlock()
+				sub := &Interp{Out: in.Out, Tools: in.Tools, modules: in.modules, types: in.types, MaxDepth: in.MaxDepth, root: root, gil: gil}
 				out[i], errs[i] = sub.call(p, a[1], []any{it})
+				// Tasks spawned inside a worker are drained before it
+				// finishes, as at program exit.
+				if errs[i] == nil {
+					errs[i] = sub.drain()
+				}
 			}(i, it)
 		}
-		wg.Wait()
+		if in.gil != nil {
+			// A nested par_map: let the workers take the lock while we wait.
+			in.gil.Unlock()
+			wg.Wait()
+			in.gil.Lock()
+		} else {
+			wg.Wait()
+		}
 		for _, e := range errs {
 			if e != nil {
 				return nil, e
@@ -643,13 +703,15 @@ func init() {
 	})
 }
 
-// SaveTrace writes the recorded trace as JSON.
+// SaveTrace writes the recorded trace as JSON. Traces hold whatever data
+// flowed through tools (file contents, HTTP bodies, env values), so a new
+// file is created readable by the owner only.
 func (h *ToolHost) SaveTrace(path string) error {
 	b, err := json.MarshalIndent(h.Trace, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(b, '\n'), 0o644)
+	return os.WriteFile(path, append(b, '\n'), 0o600)
 }
 
 // LoadReplay reads a trace to replay from.

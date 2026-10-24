@@ -1,6 +1,6 @@
 # Testing
 
-`go test -race ./...` — one package, ~3 seconds.
+`go test -race ./...` — one package, 16 tests, a few seconds.
 
 | Test | What it proves |
 |---|---|
@@ -15,6 +15,11 @@
 | `TestExamplesMatchExpectations` | `examples/hello.tarn` and `examples/agents.tarn` print exactly their `// expect:` lines. |
 | `TestParserAndLexerErrors` | Nine malformed inputs, each with the right message. |
 | `TestFuzzNeverPanics` | 8,000 random token programs through lex/parse/check/run with step and depth limits — no panic. |
+| `TestBuiltinsRecheckAnyArgumentsAtRuntime` | A value that reaches a typed builtin through `Any`, or a builtin passed as a function value, gets a positioned error instead of a Go panic. |
+| `TestParMapIsSafeBoundedAndOverlapsTools` | `par_map` workers mutating a shared counter and list give exact results with no data race; a worker's infinite loop hits the root step limit; tasks spawned in a worker run; four tool calls are in flight at once. |
+| `TestParserBoundsNesting` | 200,000-deep parens, unary minus, operator chains, blocks, types and else-if chains get "nesting too deep" instead of a stack overflow; ordinary depth still runs. |
+| `TestJSONRejectsNonData` | `json()` refuses functions instead of serialising interpreter internals. |
+| `TestSaveTraceIsOwnerOnly` | Trace files are created 0600 (skipped on Windows). |
 
 ## Real execution in CI
 

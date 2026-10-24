@@ -3,10 +3,25 @@ package tarn
 import "strconv"
 
 type parser struct {
-	toks []Token
-	i    int
-	file string
+	toks  []Token
+	i     int
+	file  string
+	depth int
 }
+
+// maxNesting bounds how deeply expressions, blocks and types may nest, so
+// hostile input gets a positioned error instead of exhausting the Go stack.
+const maxNesting = 1000
+
+func (p *parser) enter() error {
+	p.depth++
+	if p.depth > maxNesting {
+		return errAt(p.peek().Pos, "nesting too deep (limit %d)", maxNesting)
+	}
+	return nil
+}
+
+func (p *parser) leave() { p.depth-- }
 
 // Parse parses one module.
 func Parse(file, src string) (*Module, error) {
@@ -194,6 +209,10 @@ func (p *parser) signature() ([]Param, *Type, error) {
 }
 
 func (p *parser) typ() (*Type, error) {
+	if err := p.enter(); err != nil {
+		return nil, err
+	}
+	defer p.leave()
 	t := p.peek()
 	if t.Kind != TIdent {
 		return nil, errAt(t.Pos, "expected a type, found %s", describe(t))
@@ -256,6 +275,10 @@ func (p *parser) typ() (*Type, error) {
 }
 
 func (p *parser) block() (*Block, error) {
+	if err := p.enter(); err != nil {
+		return nil, err
+	}
+	defer p.leave()
 	open, err := p.expectOp("{")
 	if err != nil {
 		return nil, err
@@ -377,6 +400,10 @@ func (p *parser) stmt() (Stmt, error) {
 }
 
 func (p *parser) ifStmt() (Stmt, error) {
+	if err := p.enter(); err != nil { // else-if chains nest
+		return nil, err
+	}
+	defer p.leave()
 	t := p.next() // if
 	c, err := p.expr()
 	if err != nil {
@@ -415,7 +442,9 @@ func (p *parser) binary(min int) (Expr, error) {
 	if err != nil {
 		return nil, err
 	}
-	for {
+	// Each operator in a chain deepens the (left-leaning) tree by one,
+	// so a chain counts against the nesting limit too.
+	for chain := 0; ; chain++ {
 		t := p.peek()
 		if t.Kind != TOp && t.Kind != TKeyword {
 			return l, nil
@@ -423,6 +452,9 @@ func (p *parser) binary(min int) (Expr, error) {
 		prec, ok := binPrec[t.Text]
 		if !ok || prec < min {
 			return l, nil
+		}
+		if p.depth+chain >= maxNesting {
+			return nil, errAt(t.Pos, "nesting too deep (limit %d)", maxNesting)
 		}
 		p.next()
 		r, err := p.binary(prec + 1)
@@ -440,6 +472,10 @@ func (p *parser) binary(min int) (Expr, error) {
 }
 
 func (p *parser) unary() (Expr, error) {
+	if err := p.enter(); err != nil {
+		return nil, err
+	}
+	defer p.leave()
 	t := p.peek()
 	if p.isOp("-") || p.isOp("!") || p.isKw("not") {
 		p.next()
