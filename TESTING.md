@@ -12,6 +12,7 @@
 | `TestToolsCapabilitiesTraceAndReplay` | Denied without capability; allowed with; trace has three entries in order; seeded runs are identical; replay produces identical output with the real tool disabled; a diverging program is refused; wrong host return types are rejected. |
 | `TestModulesImportAndCycles` | `import … as`, calling module functions, unknown member error, import cycle detection. |
 | `TestFormatterIsIdempotentAndPreservesMeaning` | Every example formats to itself after one pass; ugly input is canonicalised; precedence parentheses survive. |
+| `TestFormatterIndentsClosureBodiesLikeFunctionBodies` | Inline closures (nested, empty, inside a loop) get their bodies indented one level in from the opening line and their `}` aligned with it; the result re-formats to itself. |
 | `TestExamplesMatchExpectations` | `examples/hello.tarn` and `examples/agents.tarn` print exactly their `// expect:` lines. |
 | `TestParserAndLexerErrors` | Nine malformed inputs, each with the right message. |
 | `TestFuzzNeverPanics` | 8,000 random token programs through lex/parse/check/run with step and depth limits — no panic. |

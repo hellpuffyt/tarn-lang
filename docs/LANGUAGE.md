@@ -115,3 +115,11 @@ to `main`.
 
 `tarn fmt file.tarn` prints the canonical form; `-w` rewrites the file;
 without `-w` the exit code is 3 if the file would change (for CI).
+A closure body goes on its own lines, indented one level in from the line
+that opens the closure, the same as a function body:
+
+```
+let total = reduce(results, 0, fn(acc: Int, r: List[Str]) -> Int {
+    return acc + len(r)
+})
+```

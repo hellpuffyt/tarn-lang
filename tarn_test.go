@@ -300,6 +300,43 @@ func TestFormatterIsIdempotentAndPreservesMeaning(t *testing.T) {
 	}
 }
 
+func TestFormatterIndentsClosureBodiesLikeFunctionBodies(t *testing.T) {
+	src := "fn main() {\n for a in range(2) {\n let f = fn(x: Int) -> Int { if x > 0 { return x }\n return 0 }\n" +
+		" let g = fn() { let h = fn(y) { print(y) }\n h(a) }\n let e = fn() {}\n }\n}\n"
+	want := "fn main() {\n" +
+		"    for a in range(2) {\n" +
+		"        let f = fn(x: Int) -> Int {\n" +
+		"            if x > 0 {\n" +
+		"                return x\n" +
+		"            }\n" +
+		"            return 0\n" +
+		"        }\n" +
+		"        let g = fn() {\n" +
+		"            let h = fn(y) {\n" +
+		"                print(y)\n" +
+		"            }\n" +
+		"            h(a)\n" +
+		"        }\n" +
+		"        let e = fn() {}\n" +
+		"    }\n" +
+		"}\n"
+	m, err := Parse("c", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := Format(m)
+	if got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+	m2, err := Parse("c", got)
+	if err != nil {
+		t.Fatalf("formatted output does not parse: %v\n%s", err, got)
+	}
+	if twice := Format(m2); twice != got {
+		t.Fatalf("not idempotent:\n%s", twice)
+	}
+}
+
 func TestExamplesMatchExpectations(t *testing.T) {
 	for _, f := range []string{"examples/hello.tarn", "examples/agents.tarn"} {
 		src, _ := os.ReadFile(f)
