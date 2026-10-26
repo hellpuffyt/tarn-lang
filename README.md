@@ -1,8 +1,10 @@
 # Tarn
 
-**A small language for agent workflows where every run is deterministic,
-every side effect is a typed, capability-gated tool call, and every run can
-be recorded and replayed without the outside world.**
+A small language for agent workflows. Every run is deterministic, every side
+effect is a typed tool call that needs a capability flag, and every run can be
+recorded and replayed without the outside world.
+
+[Case study ↗](https://hellpuff.dev/work/tarn-lang)
 
 ```
 tool http.get(url: Str) -> Str          // a typed tool; needs --allow http
@@ -32,7 +34,45 @@ $ tarn run flow.tarn --replay run.json          # offline, no capabilities: iden
 3 items
 ```
 
-Go, standard library only, ~3,400 lines of non-test code. `tarn run | check | fmt | repl`.
+`api.example.com` is a placeholder, so the two successful runs above were
+checked by pointing the same program at a local HTTP server that returns
+`{"title": ...}` for `/items/a`, `/items/b` and `/items/c`. The capability
+error is exactly what the unmodified program prints.
+
+Go, standard library only, about 3,500 non-blank lines of non-test code.
+Commands: `tarn run | check | fmt | repl`.
+
+## Demo
+
+The bundled examples, run from a fresh clone after `go build -o tarn
+./cmd/tarn` and `mkdir -p examples/out`:
+
+<img src="docs/screenshots/pipeline-capabilities-trace-replay.png" width="100%" alt="Terminal capture: tarn refuses to run examples/pipeline.tarn without the time capability, runs it with --allow fs,time,rand --seed 7 --trace run.json, replays it from run.json with identical output, checks it, and runs the deterministic agents example.">
+
+Real terminal capture of the commands below. The replay needs no
+`--allow` flags: `time.now`, `fs.read` and `rand.int` results come from
+`run.json`.
+
+```console
+$ ./tarn run examples/pipeline.tarn
+error: examples/pipeline.tarn:25:27: capability "time" is required to call time.now (run with --allow time)
+$ ./tarn run examples/pipeline.tarn --allow fs,time,rand --seed 7 --trace run.json
+summary: 122 words across 2 files; sample examples/hello.tarn
+elapsed ms >= 0: true
+$ ./tarn run examples/pipeline.tarn --replay run.json
+summary: 122 words across 2 files; sample examples/hello.tarn
+elapsed ms >= 0: true
+$ ./tarn check examples/pipeline.tarn
+examples/pipeline.tarn: ok (2 functions, 4 tools)
+$ ./tarn run examples/agents.tarn
+agent 0 took job-0
+agent 0 took job-3
+agent 1 took job-1
+agent 1 took job-4
+agent 2 took job-2
+results [["JOB-0", "JOB-3"], ["JOB-1", "JOB-4"], ["JOB-2"]]
+total 5
+```
 
 ## What is it?
 
@@ -48,10 +88,10 @@ Go, standard library only, ~3,400 lines of non-test code. `tarn run | check | fm
 
 ## Who is it for?
 
-- Teams building **agent orchestration**, ETL, or automation where "why did
-  it do that?" must have a reproducible answer.
-- Anyone who wants a scripting language whose programs **cannot touch the
-  network or disk unless the operator says so** — per namespace, on the
+- People building agent orchestration, ETL or automation scripts who want
+  "why did it do that?" to have a reproducible answer.
+- Anyone who wants a scripting language whose programs cannot touch the
+  network or disk unless the operator allows it, per namespace, on the
   command line.
 - People studying **language implementation**: lexer, parser, checker,
   interpreter, scheduler, formatter and module loader in one readable
@@ -64,7 +104,7 @@ library call can hit the network, every goroutine reorders output, and
 reproducing an incident means re-running against a world that has moved on.
 Tarn makes the three properties that matter for that job *language-level*:
 side effects are explicit and gated, scheduling is deterministic, and runs
-are recordable. It is a small language on purpose — the interesting part is
+are recordable. It is a small language on purpose: the interesting part is
 the runtime contract, not the syntax.
 
 ## What makes it different?
@@ -84,17 +124,19 @@ the runtime contract, not the syntax.
 - **Formatter and checker built on the same parser**, so `tarn fmt` is
   guaranteed idempotent and meaning-preserving (tested on every example).
 
-## Why is this not just a tutorial?
+## What the tests pin down
 
-Because the runtime contract is tested: 18 static-error cases, runtime
+The runtime contract is tested: 18 static-error cases, runtime
 errors with exact `line:col`, deterministic task output checked across 20
 runs, capability denial, trace recording, seeded reproducibility, replay
 equality, replay divergence detection, tool return-type enforcement, import
 cycles, formatter idempotence over every example, a step limit that stops
 `while true {}`, and an 8,000-program token-soup fuzz that must never panic, a parser nesting
 limit against stack-exhaustion input, and `par_map` checked for data races,
-step-limit enforcement and real tool-call overlap —
-all under `go test -race`.
+step-limit enforcement and real tool-call overlap,
+all under `go test -race`. CI runs the build, `go vet`, the race tests and
+the example commands below on Ubuntu, Windows and macOS with Go 1.24, plus
+`gofmt`, a stdlib-only/no-`unsafe` check and gitleaks.
 
 ## Build, test, run
 
@@ -109,13 +151,16 @@ mkdir -p examples/out          # pipeline.tarn writes examples/out/summary.txt
 ./tarn check examples/agents.tarn && ./tarn fmt examples/agents.tarn
 ```
 
-Go 1.24+.
+Go 1.24+. `tarn fmt` prints the formatted file and exits 3 when it differs
+from the input (it does for `agents.tarn`: `fmt` drops its comments and
+puts its inline closures on separate lines), so
+the last line ends with exit status 3 rather than 0.
 
-## Limits (honest)
+## Limits
 
 - Tree-walking interpreter: fine for orchestration, wrong for number
-  crunching (`examples/agents.tarn` runs in milliseconds; `fib(30)` takes
-  seconds).
+  crunching (`examples/agents.tarn` runs in milliseconds; a recursive
+  `fib(30)` takes about a second on an Apple M-series laptop).
 - Gradual typing means `Any` flows through builtins like `parse_json`; the
   runtime checks catch mismatches at typed boundaries, not before.
 - Cooperative tasks do not run in parallel. `par_map` overlaps tool calls
@@ -138,17 +183,18 @@ Go 1.24+.
 
 ## Documentation
 
-- [`docs/LANGUAGE.md`](docs/LANGUAGE.md) — syntax, types, builtins, tools, tasks, tracing
-- [`ARCHITECTURE.md`](ARCHITECTURE.md) — checker, interpreter, scheduler, tool host, replay protocol
-- [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) — audit evidence, acceptance checklist
+- [`docs/LANGUAGE.md`](docs/LANGUAGE.md): syntax, types, builtins, tools, tasks, tracing
+- [`ARCHITECTURE.md`](ARCHITECTURE.md): checker, interpreter, scheduler, tool host, replay protocol
+- [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md): audit evidence, acceptance checklist
 - [`SECURITY.md`](SECURITY.md), [`TESTING.md`](TESTING.md), [`ROADMAP.md`](ROADMAP.md), [`CONTRIBUTING.md`](CONTRIBUTING.md), [`CHANGELOG.md`](CHANGELOG.md)
 
-## Why star or contribute?
+## Contributing
 
-Star it if you have ever debugged a flaky agent pipeline and wished you could
-just replay it. Contribute a tool namespace (SQL, S3, LLM calls), a bytecode
-VM, floats, or an LSP — each lands against a small core with tests that say
-exactly what must stay true.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`ROADMAP.md`](ROADMAP.md).
+Useful additions are a new tool namespace (SQL, S3, LLM calls), a bytecode
+VM, floats, or an LSP; each lands against a small core whose tests say
+exactly what must stay true. Report vulnerabilities as described in
+[`SECURITY.md`](SECURITY.md).
 
 ## License
 
