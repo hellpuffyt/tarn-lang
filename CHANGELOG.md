@@ -6,6 +6,11 @@ Language and trace-format changes are called out explicitly.
 ## [Unreleased]
 
 ### Fixed
+- `tarn fmt` did not indent the body of an inline closure: the body was
+  printed one level in from column 0 and the closing `}` at column 0,
+  whatever the closure's nesting. Closure bodies now nest like function
+  bodies (one level in from the line that opens them, closing brace aligned
+  with that line), including closures inside closures.
 - `par_map` no longer crashes with "concurrent map writes" when workers
   touch shared variables: worker code runs under an interpreter lock that is
   released around tool calls, so tool I/O now genuinely overlaps (the tool

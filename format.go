@@ -72,8 +72,14 @@ type formatter struct {
 }
 
 func (f *formatter) line(format string, a ...any) {
-	f.b.WriteString(strings.Repeat("    ", f.indent))
-	fmt.Fprintf(&f.b, format, a...)
+	pad := strings.Repeat("    ", f.indent)
+	// A closure (FnLit) is formatted on its own as a multi-line string whose
+	// body sits one level in and whose closing brace sits at column 0. Its
+	// continuation lines are shifted to this line's indent, so closure
+	// bodies nest like function bodies. String literals are quoted, so the
+	// only raw newlines here come from closures.
+	f.b.WriteString(pad)
+	f.b.WriteString(strings.ReplaceAll(fmt.Sprintf(format, a...), "\n", "\n"+pad))
 	f.b.WriteByte('\n')
 	f.blankP = false
 }
